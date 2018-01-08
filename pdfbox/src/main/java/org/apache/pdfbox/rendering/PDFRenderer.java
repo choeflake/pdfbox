@@ -20,7 +20,6 @@ import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
-
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
@@ -30,7 +29,6 @@ import org.apache.pdfbox.pdmodel.common.PDRectangle;
  * This class may be overridden in order to perform custom rendering.
  *
  * @author John Hewson
- * @author Andreas Lehmkühler
  */
 public class PDFRenderer
 {
@@ -109,22 +107,12 @@ public class PDFRenderer
     {
         PDPage page = document.getPage(pageIndex);
 
-        PDRectangle cropBox = page.findCropBox();
-        float widthPt = cropBox.getWidth();
-        float heightPt = cropBox.getHeight();
+        PDRectangle cropbBox = page.getCropBox();
+        float widthPt = cropbBox.getWidth();
+        float heightPt = cropbBox.getHeight();
         int widthPx = Math.round(widthPt * scale);
         int heightPx = Math.round(heightPt * scale);
-        int rotationAngle = page.findRotation();
-
-        // normalize the rotation angle
-        if (rotationAngle < 0)
-        {
-            rotationAngle += 360;
-        }
-        else if (rotationAngle >= 360)
-        {
-            rotationAngle -= 360;
-        }
+        int rotationAngle = page.getRotation();
 
         // swap width and height
         BufferedImage image;
@@ -139,12 +127,23 @@ public class PDFRenderer
 
         // use a transparent background if the imageType supports alpha
         Graphics2D g = image.createGraphics();
-        if (imageType != ImageType.ARGB)
+        if (imageType == ImageType.ARGB)
+        {
+            g.setBackground(new Color(0, 0, 0, 0));
+        }
+        else
         {
             g.setBackground(Color.WHITE);
         }
+        g.clearRect(0, 0, image.getWidth(), image.getHeight());
+        
+        transform(g, page, scale, scale);
 
-        renderPage(page, g, image.getWidth(), image.getHeight(), scale, scale);
+        // the end-user may provide a custom PageDrawer
+        PageDrawerParameters parameters = new PageDrawerParameters(this, page);
+        PageDrawer drawer = createPageDrawer(parameters);
+        drawer.drawPage(g, page.getCropBox());       
+        
         g.dispose();
 
         return image;
@@ -161,34 +160,54 @@ public class PDFRenderer
         renderPageToGraphics(pageIndex, graphics, 1);
     }
 
+
     /**
      * Renders a given page to an AWT Graphics2D instance.
      * @param pageIndex the zero-based index of the page to be converted
      * @param graphics the Graphics2D on which to draw the page
-     * @scale scale the scale to draw the page at
+     * @param scale the scale to draw the page at
      * @throws IOException if the PDF cannot be read
      */
     public void renderPageToGraphics(int pageIndex, Graphics2D graphics, float scale)
             throws IOException
     {
+    		renderPageToGraphics(pageIndex, graphics, scale, scale);
+    }
+    
+    /**
+     * Renders a given page to an AWT Graphics2D instance.
+     * @param pageIndex the zero-based index of the page to be converted
+     * @param graphics the Graphics2D on which to draw the page
+     * @param scaleX the scale to draw the page at for the x-axis
+     * @param scaleY the scale to draw the page at for the y-axis
+     * @throws IOException if the PDF cannot be read
+     */
+    public void renderPageToGraphics(int pageIndex, Graphics2D graphics, float scaleX, float scaleY)
+            throws IOException
+    {
         PDPage page = document.getPage(pageIndex);
         // TODO need width/wight calculations? should these be in PageDrawer?
-        PDRectangle cropBox = page.findCropBox();
-        renderPage(page, graphics, (int)cropBox.getWidth(), (int)cropBox.getHeight(), scale, scale);
+
+        transform(graphics, page, scaleX, scaleY);
+
+        PDRectangle cropBox = page.getCropBox();
+        graphics.clearRect(0, 0, (int) cropBox.getWidth(), (int) cropBox.getHeight());
+
+        // the end-user may provide a custom PageDrawer
+        PageDrawerParameters parameters = new PageDrawerParameters(this, page);
+        PageDrawer drawer = createPageDrawer(parameters);
+        drawer.drawPage(graphics, cropBox);
     }
 
-    // renders a page to the given graphics
-    // TODO need to be able to override this
-    private void renderPage(PDPage page, Graphics2D graphics, int width, int height, float scaleX,
-                            float scaleY) throws IOException
+    // scale rotate translate
+    private void transform(Graphics2D graphics, PDPage page, float scaleX, float scaleY)
     {
-        graphics.clearRect(0, 0, width, height);
-
         graphics.scale(scaleX, scaleY);
-        // TODO should we be passing the scale to PageDrawer rather than messing with Graphics?
 
-        PDRectangle cropBox = page.findCropBox();
-        int rotationAngle = page.findRotation();
+        // TODO should we be passing the scale to PageDrawer rather than messing with Graphics?
+        int rotationAngle = page.getRotation();
+        PDRectangle cropBox = page.getCropBox();
+
         if (rotationAngle != 0)
         {
             float translateX = 0;
@@ -196,20 +215,28 @@ public class PDFRenderer
             switch (rotationAngle)
             {
                 case 90:
-                case 270:
                     translateX = cropBox.getHeight();
+                    break;
+                case 270:
+                    translateY = cropBox.getWidth();
                     break;
                 case 180:
                     translateX = cropBox.getWidth();
                     translateY = cropBox.getHeight();
                     break;
+                default:
+                    break;
             }
             graphics.translate(translateX, translateY);
             graphics.rotate((float) Math.toRadians(rotationAngle));
         }
+    }
 
-        PageDrawer drawer = new PageDrawer(this);   // TODO: need to make it easy to use a custom PageDrawer
-        drawer.drawPage(graphics, page, cropBox);
-        drawer.dispose();
+    /**
+     * Returns a new PageDrawer instance, using the given parameters. May be overridden.
+     */
+    protected PageDrawer createPageDrawer(PageDrawerParameters parameters) throws IOException
+    {
+        return new PageDrawer(parameters);
     }
 }
